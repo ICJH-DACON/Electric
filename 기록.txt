@@ -1,0 +1,16 @@
+0 : [catboost, xgboost,et, lightgbm,  rf]
+1 : [et, rf, catboost, xgboost, lightgbm]
+2:  [rf, catboost, dt, et,lightgbm, xgboost]
+3 : [rf, lightgbm, xgboost, catboost, et]
+5: [catboost, xgboost, rf, et, lightgbm, dt ]
+18 : [catboost, xgboost, lightgbm,et, rf]
+
+
+전략 1 : [catboost, xgboost, lightgbm,et, rf] 개에 catboost로 스태킹
+
+전략 2 : 예측 모델 만든 후, 시계열 모델 만들어서 짬뽕
+
+전략 3 : 전처리에서 ID 만들기
+
+전략 4 : 불쾌지수 만들기 DI
+
