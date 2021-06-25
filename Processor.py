@@ -58,71 +58,12 @@ class Preprocessor:
             clust_to_num[c].append(i + 1)
         return clust_to_num
 
-    def CDH(self, xs):
-        ys = []
-        for i in range(len(xs)):
-            if i < 11:
-                ys.append(np.sum(xs[:(i + 1)] - 26))
-            else:
-                ys.append(np.sum(xs[(i - 11):(i + 1)] - 26))
-        return np.array(ys)
-
     def train_preprocess(self):
         X_train = self.train.copy()
-        X_train['datetime'] = pd.to_datetime(X_train['datetime'])
-        X_train['hour'] = X_train['datetime'].dt.hour
-        X_train['month'] = X_train['datetime'].dt.month
-        X_train['day'] = X_train['datetime'].dt.day
-        X_train['date'] = X_train['datetime'].dt.date
-        X_train['weekday'] = X_train['datetime'].dt.weekday
 
-        ## daily minimum temperature
-        X_train = X_train.merge(X_train.groupby(['num', 'date'])['temperature'].min().reset_index().rename(columns={'temperature': 'min_temperature'}), on=['num', 'date'], how='left')
-        ## THI
-        X_train['THI'] = 9 / 5 * X_train['temperature'] - 0.55 * (1 - X_train['humidity'] / 100) * (
-                    9 / 5 * X_train['temperature'] - 26) + 32
-        ## mean_THI
-        X_train = X_train.merge(X_train.groupby(['num', 'date'])['THI'].mean().reset_index().rename(columns={'THI': 'mean_THI'}), on=['num', 'date'], how='left')
-        ## CDH
-        cdhs = np.array([])
-        for num in range(1, 61, 1):
-            temp = X_train[X_train['num'] == num]
-            cdh = self.CDH(temp['temperature'].values)
-            cdhs = np.concatenate([cdhs, cdh])
-        X_train['CDH'] = cdhs
-        ## mean_CDH
-        X_train = X_train.merge(
-            X_train.groupby(['num', 'date'])['CDH'].mean().reset_index().rename(columns={'CDH': 'mean_CDH'}),
-            on=['num', 'date'], how='left')
-        ## date to numeric
-        X_train['date_num'] = X_train['month'] + X_train['day'] / 31
-        # split each building
-        X_trains = [X_train[X_train.num == num] for num in range(1, 61, 1)]
-
-        ## feature engineering on each cluster
-        for num in self.clust_to_num[0]:
-            temp_df = X_trains[num - 1]
-            temp_df['working_time'] = ((temp_df['hour'].isin(range(8,20)))).astype(int)
-            X_trains[num - 1] = temp_df
-
-        for num in self.clust_to_num[2]:
-            temp_df = X_trains[num - 1]
-            temp_df['working_time'] = ((temp_df['hour'].isin(range(18,23)))).astype(int)
-            X_trains[num - 1] = temp_df
-
-        for num in self.clust_to_num[3]:
-            temp_df = X_trains[num - 1]
-            temp_df['working_time'] = ((temp_df['hour'].isin(range(8,20))) & (temp_df['weekday'].isin([0, 1, 2, 3, 4]))).astype(int)
-            temp_df['lunch_time'] = (
-                        (temp_df['hour'].isin([11, 12, 13])) & (temp_df['weekday'].isin([0, 1, 2, 3, 4]))).astype(int)
-            X_trains[num - 1] = temp_df
-
-        y_trains = [df['target'].values for df in X_trains]
-        X_trains = [df.drop('target', axis=1) for df in X_trains]
-
-        # drop unnecessary columns
-        X_trains = [df.drop(['num', 'datetime', 'date'], axis=1).reset_index().drop('index', axis=1)
-                    for df in X_trains]
+        X_trains = self.preprocessing(X_train)
+        y_trains = [X_train['target'].values for X_train in X_trains]
+        X_trains = [X_train.drop('target', axis=1) for X_train in X_trains]
 
         # standard scaling on numerical features
         num_features = ['temperature', 'windspeed', 'humidity', 'precipitation', 'insolation', 'min_temperature', 'THI',
@@ -132,72 +73,81 @@ class Preprocessor:
         for i, df in enumerate(X_trains):
             means.append(df.loc[:, num_features].mean(axis=0))
             stds.append(df.loc[:, num_features].std(axis=0))
-            df.loc[:, num_features] = (df.loc[:, num_features] - df.loc[:, num_features].mean(axis=0)) / df.loc[:, num_features].std(axis=0)
+            df.loc[:, num_features] = (df.loc[:, num_features] - df.loc[:, num_features].mean(axis=0)) / df.loc[:,
+                                                                                                         num_features].std(
+                axis=0)
             X_trains[i] = df
-        return X_trains, y_trains, means, stds
 
-    def test_preprocess(self, means, stds):
-        X_train = self.test.copy()
+        self.means = means
+        self.stds = stds
 
-        X_train['datetime'] = pd.to_datetime(X_train['datetime'])
-        X_train['hour'] = X_train['datetime'].dt.hour
-        X_train['month'] = X_train['datetime'].dt.month
-        X_train['day'] = X_train['datetime'].dt.day
-        X_train['date'] = X_train['datetime'].dt.date
-        X_train['weekday'] = X_train['datetime'].dt.weekday
+        return X_trains, y_trains
+
+    def test_preprocess(self):
+        X_test = self.test.copy()
+        X_test = X_test.interpolate()
+
+        X_tests = self.preprocessing(X_test)
+
+        # standard scaling on numerical features
+        num_features = ['temperature', 'windspeed', 'humidity', 'precipitation', 'insolation', 'min_temperature',
+                        'THI', 'mean_THI', 'CDH', 'mean_CDH', 'date_num']
+        for i, (df, mean, std) in enumerate(zip(X_tests, self.means, self.stds)):
+            df.loc[:, num_features] = (df.loc[:, num_features] - mean) / std
+            X_tests[i] = df
+
+        return X_tests
+
+    def preprocessing(self, df):
+        df['datetime'] = pd.to_datetime(df['datetime'])
+        df['hour'] = df['datetime'].dt.hour
+        df['month'] = df['datetime'].dt.month
+        df['day'] = df['datetime'].dt.day
+        df['date'] = df['datetime'].dt.date
+        df['weekday'] = df['datetime'].dt.weekday
 
         ## daily minimum temperature
-        X_train = X_train.merge(X_train.groupby(['num', 'date'])['temperature'].min().reset_index().rename(
+        df = df.merge(df.groupby(['num', 'date'])['temperature'].min().reset_index().rename(
             columns={'temperature': 'min_temperature'}), on=['num', 'date'], how='left')
         ## THI
-        X_train['THI'] = 9 / 5 * X_train['temperature'] - 0.55 * (1 - X_train['humidity'] / 100) * (
-                    9 / 5 * X_train['temperature'] - 26) + 32
+        df['THI'] = 9 / 5 * df['temperature'] - 0.55 * (1 - df['humidity'] / 100) * (
+                9 / 5 * df['temperature'] - 26) + 32
         ## mean_THI
-        X_train = X_train.merge(
-            X_train.groupby(['num', 'date'])['THI'].mean().reset_index().rename(columns={'THI': 'mean_THI'}),
+        df = df.merge(
+            df.groupby(['num', 'date'])['THI'].mean().reset_index().rename(columns={'THI': 'mean_THI'}),
             on=['num', 'date'], how='left')
         ## CDH
         cdhs = np.array([])
         for num in range(1, 61, 1):
-            temp = X_train[X_train['num'] == num]
+            temp = df[df['num'] == num]
             cdh = self.CDH(temp['temperature'].values)
             cdhs = np.concatenate([cdhs, cdh])
-        X_train['CDH'] = cdhs
+        df['CDH'] = cdhs
         ## mean_CDH
-        X_train = X_train.merge(
-            X_train.groupby(['num', 'date'])['CDH'].mean().reset_index().rename(columns={'CDH': 'mean_CDH'}),
+        df = df.merge(
+            df.groupby(['num', 'date'])['CDH'].mean().reset_index().rename(columns={'CDH': 'mean_CDH'}),
             on=['num', 'date'], how='left')
         ## date to numeric
-        X_train['date_num'] = X_train['month'] + X_train['day'] / 31
-        X_trains = [X_train[X_train.num == num].interpolate().fillna(0) for num in range(1, 61)]
+        df['date_num'] = df['month'] + df['day'] / 31
+        # split each building
+        dfs = [df[df.num == num] for num in range(1, 61, 1)]
 
-        ## feature engineering on each cluster
-        for num in self.clust_to_num[0]:
-            temp_df = X_trains[num - 1]
-            temp_df['working_time'] = ((temp_df['hour'].isin([8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]))).astype(
-                int)
-            X_trains[num - 1] = temp_df
-        for num in self.clust_to_num[2]:
-            temp_df = X_trains[num - 1]
-            temp_df['working_time'] = ((temp_df['hour'].isin([18, 19, 20, 21, 22]))).astype(int)
-            X_trains[num - 1] = temp_df
-        for num in self.clust_to_num[3]:
-            temp_df = X_trains[num - 1]
-            temp_df['working_time'] = ((temp_df['hour'].isin([8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19])) & (
-                temp_df['weekday'].isin([0, 1, 2, 3, 4]))).astype(int)
-            temp_df['lunch_time'] = (
-                        (temp_df['hour'].isin([11, 12])) & (temp_df['weekday'].isin([0, 1, 2, 3, 4]))).astype(int)
-            X_trains[num - 1] = temp_df
-        # drop unnecessary columns
-        X_trains = [df.drop(['num', 'datetime', 'date'],
-                            axis=1).reset_index().drop('index', axis=1) for df in X_trains]
-        # standard scaling on numerical features
-        num_features = ['temperature', 'windspeed', 'humidity', 'precipitation', 'insolation', 'min_temperature',
-                        'THI', 'mean_THI','CDH', 'mean_CDH', 'date_num']
-        for i, (df, mean, std) in enumerate(zip(X_trains, means, stds)):
-            df.loc[:, num_features] = (df.loc[:, num_features] - mean) / std
-            X_trains[i] = df
-        return X_trains
+        dfs = [df.drop(['num', 'datetime', 'date', 'nelec_cool_flag', 'solar_flag'], axis=1).reset_index().drop('index',axis=1)
+            for df in dfs]
+
+        return dfs
+
+    def CDH(self, xs):
+        ys = []
+        for i in range(len(xs)):
+            if i < 11:
+                ys.append(np.sum(xs[:(i + 1)] - 26))
+            else:
+                ys.append(np.sum(xs[(i - 11):(i + 1)] - 26))
+        return np.array(ys)
+
+    def DI(self, temp, humid):
+        return 0.81 * temp + 0.01 * humid * (0.99 * temp - 14.3) + 46.3
 
 
 class CV_sklearn:
